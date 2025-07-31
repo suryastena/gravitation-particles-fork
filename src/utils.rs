@@ -1,7 +1,5 @@
-use crate::consts::{
-    G, HEIGHT, LOWER_BOUND, MAX_ZOOM, UPPER_BOUND, WIDTH, WORLD_HEIGHT, WORLD_WIDTH,
-};
-use crate::particle::Particle;
+use crate::consts::{G, MAX_ZOOM, MOUSE_AREA, WORLD_HEIGHT, WORLD_WIDTH};
+use crate::particle::ParticleSystem;
 use crate::quadtree::QuadTree;
 use crate::rectangle::Rectangle;
 use chrono::{DateTime, Local};
@@ -22,8 +20,9 @@ fn random_in_circle(radius: f32, padding: f32, center: Vector2<f32>) -> Vector2<
     Vector2::new(distance * angle.cos(), distance * angle.sin()) + center
 }
 
+#[allow(dead_code)]
 pub fn spawn_circle(
-    particles: &mut Vec<Particle>,
+    particles: &mut ParticleSystem,
     center: Vector2<f32>,
     radius: f32,
     particle_mass: f32,
@@ -31,14 +30,13 @@ pub fn spawn_circle(
 ) {
     for i in 0..particles_amount {
         let pos = random_in_circle(radius, 0.0, center);
-        let new_particle =
-            Particle::new(pos, Vector2::default(), particle_mass, 0.00001, i as usize);
-        particles.push(new_particle);
+        particles.add_particle(pos, Vector2::default(), particle_mass, 0.00001, i as usize);
     }
 }
 
+#[allow(dead_code)]
 pub fn create_galaxy(
-    particles: &mut Vec<Particle>,
+    particles: &mut ParticleSystem,
     center: Vector2<f32>,
     initial_vel: Vector2<f32>,
     radius: f32,
@@ -51,42 +49,46 @@ pub fn create_galaxy(
         let distance_to_center = pos.metric_distance(&center);
         let orbital_vel = ((G * sun_mass) / distance_to_center).sqrt();
         let dir = Vector2::new(pos.y - center.y, center.x - pos.x).normalize();
-        let new_particle =
-            Particle::new(pos, dir * orbital_vel, particle_mass, 0.00001, i as usize);
-        particles.push(new_particle);
+        particles.add_particle(pos, dir * orbital_vel, particle_mass, 0.00001, i as usize);
     }
 
-    let sun = Particle::new(
+    // Add the sun
+    particles.add_particle(
         center,
         initial_vel,
         sun_mass,
         1.5,
         particles_amount as usize,
     );
-    particles.push(sun);
 }
 
-pub fn create_quadtree(particles: &Vec<Particle>) -> QuadTree {
+pub fn create_quadtree(particles: &ParticleSystem) -> QuadTree {
     let mut qt = QuadTree::new(Rectangle::new(
         Vector2::new(0.0, 0.0),
         WORLD_WIDTH,
         WORLD_HEIGHT,
     ));
-    for i in 0..particles.len() {
-        qt.insert(&particles[i]);
+    for i in 0..particles.count {
+        qt.insert(particles, i);
     }
     qt
 }
 
-pub fn calculate_new_position(particle: &mut Particle, qt: &mut QuadTree) {
-    particle.net_force = Vector2::new(0.0, 0.0);
-    qt.calculate_force(particle);
-    // println!("{:?}", borrowed.net_force);
+pub fn calculate_new_position(particles: &mut ParticleSystem, idx: usize, qt: &mut QuadTree) {
+    particles.reset_net_force(idx);
+    qt.calculate_force(particles, idx);
 
-    let acceleration = particle.net_force / particle.mass;
-    particle.vel += acceleration;
-    let velocity = particle.vel;
-    particle.pos += velocity;
+    let mass = particles.mass[idx];
+    let net_force = particles.get_net_force(idx);
+    let acceleration = net_force / mass;
+
+    let mut velocity = particles.get_velocity(idx);
+    velocity += acceleration;
+    particles.set_velocity(idx, velocity);
+
+    let mut position = particles.get_position(idx);
+    position += velocity;
+    particles.set_position(idx, position);
 }
 
 pub fn world_to_screen_coords(
@@ -96,6 +98,7 @@ pub fn world_to_screen_coords(
 ) -> Vector2<f32> {
     (origin + world_coords) * zoom
 }
+
 pub fn screen_to_world_coords(
     screen_coords: Vector2<f32>,
     origin: &Vector2<f32>,
@@ -104,132 +107,173 @@ pub fn screen_to_world_coords(
     screen_coords / zoom - origin
 }
 
-pub fn rename_images(ctx: &Context) {
-    let data_dir = ctx.fs.user_data_dir();
-    for file in fs::read_dir(data_dir.join("image-cache/")).unwrap() {
-        let full_path: PathBuf = file.as_ref().unwrap().path();
-        let full_path_string: String = full_path.to_string_lossy().to_string();
-        let full_name = String::from(
-            file.as_ref()
-                .unwrap()
-                .path()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-        );
-        let name = full_name[0..full_name.len() - 4].to_owned();
-        if name.chars().nth(0).unwrap() == '.' {
-            continue;
+pub fn move_on_mouse(ctx: &mut Context, origin: &mut Vector2<f32>, zoom: f32) {
+    let mouse_pos = ctx.mouse.position();
+    let (mouse_x, mouse_y) = (mouse_pos.x, mouse_pos.y);
+    if ctx
+        .mouse
+        .button_pressed(ggez::input::mouse::MouseButton::Left)
+    {
+        let mouse_del = ctx.mouse.delta();
+        let (delta_x, delta_y) = (mouse_del.x, mouse_del.y);
+        origin.x += delta_x / zoom;
+        origin.y += delta_y / zoom;
+    }
+
+    if ctx
+        .mouse
+        .button_pressed(ggez::input::mouse::MouseButton::Middle)
+    {
+        let screen_coords = Vector2::new(mouse_x, mouse_y);
+        let world_coords = screen_to_world_coords(screen_coords, origin, zoom);
+        if world_coords.x < 0.0
+            || world_coords.x > WORLD_WIDTH
+            || world_coords.y < 0.0
+            || world_coords.y > WORLD_HEIGHT
+        {
+            return;
         }
-        let prefix_amount = 6 - name.len();
-        let repeated_string: String = std::iter::repeat("0").take(prefix_amount).collect();
-        let path = &full_path_string[0..full_path_string.len() - full_name.len()];
-        let old_path = String::from(path) + &full_name;
-        let new_path = String::from(path) + &repeated_string + &full_name;
-        let _ = fs::rename(old_path, new_path);
+    }
+}
+
+pub fn zoom_world(
+    ctx: &mut Context,
+    origin: &mut Vector2<f32>,
+    zoom: &mut f32,
+    wheel_direction: f32,
+) {
+    let scale_factor = 1.1;
+    let mouse_pos = ctx.mouse.position();
+    let (mouse_x, mouse_y) = (mouse_pos.x, mouse_pos.y);
+    let mouse_world_before = screen_to_world_coords(Vector2::new(mouse_x, mouse_y), origin, *zoom);
+
+    if wheel_direction > 0.0 {
+        *zoom = (*zoom * scale_factor).min(MAX_ZOOM);
+    } else if wheel_direction < 0.0 {
+        *zoom = (*zoom / scale_factor).max(MOUSE_AREA);
+    }
+
+    let mouse_world_after = screen_to_world_coords(Vector2::new(mouse_x, mouse_y), origin, *zoom);
+    origin.x += mouse_world_before.x - mouse_world_after.x;
+    origin.y += mouse_world_before.y - mouse_world_after.y;
+
+    origin.x = origin.x.clamp(-WORLD_WIDTH / 2.0, WORLD_WIDTH / 2.0);
+    origin.y = origin.y.clamp(-WORLD_HEIGHT / 2.0, WORLD_HEIGHT / 2.0);
+}
+
+pub fn save_screen(ctx: &mut Context, screen: &mut ScreenImage, frame_count: u32) {
+    let path = format!("/image-cache/frame-{}.jpg", frame_count);
+    let result = screen
+        .image(ctx)
+        .encode(ctx, ImageEncodingFormat::Jpeg, path.as_str());
+    match result {
+        Ok(_) => {}
+        Err(e) => eprintln!("Error saving screen: {:?}", e),
+    }
+}
+
+pub fn rename_images(ctx: &Context) {
+    let cache_dir_path: PathBuf = ctx.fs.resources_dir().join("image-cache");
+    if !cache_dir_path.exists() || !cache_dir_path.is_dir() {
+        eprintln!("Cache directory does not exist or is not a directory.");
+        return;
+    }
+
+    let mut cache_pics: Vec<PathBuf> = fs::read_dir(&cache_dir_path)
+        .expect("Failed to read cache directory")
+        .filter_map(|entry| {
+            let entry = entry.expect("Failed to get directory entry");
+            let path = entry.path();
+            if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("jpg")) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    cache_pics.sort_by(|a, b| {
+        let a_number = a
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.trim_start_matches("frame-").parse::<u32>().ok())
+            .unwrap_or(0);
+        let b_number = b
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.trim_start_matches("frame-").parse::<u32>().ok())
+            .unwrap_or(0);
+        a_number.cmp(&b_number)
+    });
+
+    for (index, old_path) in cache_pics.iter().enumerate() {
+        let new_name = format!("{:06}.jpg", index + 1);
+        let new_path = cache_dir_path.join(new_name);
+        if let Err(e) = fs::rename(&old_path, &new_path) {
+            eprintln!("Error renaming file: {:?}", e);
+        }
     }
 }
 
 pub fn convert_to_video(ctx: &Context) {
-    let data_dir = ctx.fs.user_data_dir().to_string_lossy().to_string();
-    let local: DateTime<Local> = Local::now();
-    let formatted_date_time = local.format("%Y-%m-%d_%H.%M.%S").to_string();
-    let mut cmd = Command::new("ffmpeg")
-        .args([
-            "-framerate",
-            "60",
-            "-pattern_type",
-            "glob",
-            "-i",
-            format!("{data_dir}/image-cache/*.png").as_str(),
-            "-vf",
-            "eq=saturation=2",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            format!("results/{formatted_date_time}.mp4").as_str(),
-        ])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    {
-        let stdout = cmd.stdout.as_mut().unwrap();
-        let stdout_reader = BufReader::new(stdout);
-        let stdout_lines = stdout_reader.lines();
+    let now: DateTime<Local> = Local::now();
+    let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
+    let output_filename = format!("output_{}.mp4", timestamp);
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let results_path = current_dir.join("results").join(output_filename);
 
-        for line in stdout_lines {
-            println!("Read: {:?}", line);
+    let cache_dir_path: PathBuf = ctx.fs.resources_dir().join("image-cache");
+    let input_pattern = cache_dir_path.join("%06d.jpg");
+
+    let mut cmd = Command::new("ffmpeg")
+        .args(&["-y"])
+        .args(&["-framerate", "60"])
+        .args(&["-i", input_pattern.to_str().expect("Invalid path")])
+        .args(&["-c:v", "libx264"])
+        .args(&["-pix_fmt", "yuv420p"])
+        .args(&["-preset", "veryfast"])
+        .args(&["-crf", "18"])
+        .arg(results_path.to_str().expect("Invalid path"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn ffmpeg");
+
+    let stderr = cmd.stderr.take().expect("Failed to capture stderr");
+    let reader = BufReader::new(stderr);
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            println!("{}", line);
         }
     }
 
-    cmd.wait().unwrap();
+    match cmd.wait() {
+        Ok(status) => {
+            if status.success() {
+                println!("Video created successfully!");
+            } else {
+                eprintln!("ffmpeg failed with status: {}", status);
+            }
+        }
+        Err(e) => eprintln!("Error running ffmpeg: {:?}", e),
+    }
 }
 
 pub fn clean_cache_images(ctx: &Context) {
-    let data_dir = ctx.fs.user_data_dir();
-    for file in fs::read_dir(data_dir.join("image-cache/")).unwrap() {
-        let full_path: PathBuf = file.as_ref().unwrap().path();
-        let _ = fs::remove_file(full_path);
+    let cache_dir_path: PathBuf = ctx.fs.resources_dir().join("image-cache");
+    if !cache_dir_path.exists() || !cache_dir_path.is_dir() {
+        return;
     }
-}
 
-pub fn move_on_mouse(ctx: &mut Context, origin: &mut Vector2<f32>, zoom: f32) {
-    const DESIRED_FPS: u32 = 60;
-
-    while ctx.time.check_update_time(DESIRED_FPS) {
-        let mouse_position = ctx.mouse.position();
-
-        if mouse_position.x < LOWER_BOUND.x {
-            origin.x += 5.0;
-        } else if mouse_position.x > UPPER_BOUND.x {
-            origin.x -= 5.0;
+    let entries = fs::read_dir(&cache_dir_path).expect("Failed to read cache directory");
+    for entry in entries {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("jpg")) {
+                if let Err(e) = fs::remove_file(&path) {
+                    eprintln!("Error deleting file: {:?}", e);
+                }
+            }
         }
-        if mouse_position.y < LOWER_BOUND.y {
-            origin.y += 5.0;
-        } else if mouse_position.y > UPPER_BOUND.y {
-            origin.y -= 5.0;
-        }
-
-        if -origin.x < 0.0 {
-            origin.x = 0.0;
-        } else if -origin.x + WIDTH / zoom > WORLD_WIDTH {
-            origin.x = WIDTH / zoom - WORLD_WIDTH;
-        }
-        if -origin.y < 0.0 {
-            origin.y = 0.0;
-        } else if -origin.y + HEIGHT / zoom > WORLD_HEIGHT {
-            origin.y = HEIGHT / zoom - WORLD_HEIGHT;
-        }
-    }
-}
-
-pub fn zoom_world(ctx: &Context, origin: &mut Vector2<f32>, zoom: &mut f32, y_diff: f32) {
-    let mouse_x = ctx.mouse.position().x;
-    let mouse_y = ctx.mouse.position().y;
-
-    let mut mouse_world = screen_to_world_coords(Vector2::new(mouse_x, mouse_y), origin, *zoom);
-    if y_diff > 0.0 {
-        *zoom *= 1.1;
-    } else if y_diff < 0.0 {
-        *zoom /= 1.1;
-    }
-    if *zoom < MAX_ZOOM {
-        *zoom = MAX_ZOOM;
-    }
-    mouse_world = world_to_screen_coords(mouse_world, origin, *zoom);
-
-    origin.x += (mouse_x - mouse_world.x) / *zoom;
-    origin.y += (mouse_y - mouse_world.y) / *zoom;
-}
-
-pub fn save_screen(ctx: &Context, screen: &mut ScreenImage, frame_count: u32) {
-    let output_name = String::from("/image-cache/") + frame_count.to_string().as_str() + ".png";
-    match screen
-        .image(ctx)
-        .encode(ctx, ImageEncodingFormat::Png, output_name)
-    {
-        Err(saving_err) => eprintln!("{}", saving_err),
-        _ => {}
     }
 }

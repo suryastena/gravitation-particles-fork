@@ -8,40 +8,141 @@ use nalgebra::Vector2;
 
 use crate::consts::{G, SOFTENING};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Particle {
-    pub pos: Vector2<f32>,
-    pub vel: Vector2<f32>,
-    pub net_force: Vector2<f32>,
-    pub mass: f32,
-    pub radius: f32,
-    pub index: usize,
+#[derive(Clone, Debug)]
+pub struct ParticleSystem {
+    // Position vectors
+    pub pos_x: Vec<f32>,
+    pub pos_y: Vec<f32>,
+
+    // Velocity vectors
+    pub vel_x: Vec<f32>,
+    pub vel_y: Vec<f32>,
+
+    // Net force vectors
+    pub net_force_x: Vec<f32>,
+    pub net_force_y: Vec<f32>,
+
+    // Scalar properties
+    pub mass: Vec<f32>,
+    pub radius: Vec<f32>,
+    pub indices: Vec<usize>,
+
+    // Number of particles
+    pub count: usize,
 }
 
-impl Particle {
-    pub fn new(pos: Vector2<f32>, vel: Vector2<f32>, mass: f32, radius: f32, index: usize) -> Self {
+impl ParticleSystem {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
         Self {
-            pos,
-            vel,
-            net_force: Vector2::new(0.0, 0.0),
-            mass,
-            radius,
-            index,
+            pos_x: Vec::new(),
+            pos_y: Vec::new(),
+            vel_x: Vec::new(),
+            vel_y: Vec::new(),
+            net_force_x: Vec::new(),
+            net_force_y: Vec::new(),
+            mass: Vec::new(),
+            radius: Vec::new(),
+            indices: Vec::new(),
+            count: 0,
         }
     }
 
-    pub fn get_attraction_force(&mut self, another_particle: &Particle) -> Vector2<f32> {
-        let r =
-            (self.pos.metric_distance(&another_particle.pos).powi(2) + SOFTENING.powi(2)).sqrt();
-        let dir = (another_particle.pos - self.pos).normalize();
-        let magnitude = G * ((self.mass * another_particle.mass) / r.powi(2));
-        let force = dir * magnitude;
-
-        force
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            pos_x: Vec::with_capacity(capacity),
+            pos_y: Vec::with_capacity(capacity),
+            vel_x: Vec::with_capacity(capacity),
+            vel_y: Vec::with_capacity(capacity),
+            net_force_x: Vec::with_capacity(capacity),
+            net_force_y: Vec::with_capacity(capacity),
+            mass: Vec::with_capacity(capacity),
+            radius: Vec::with_capacity(capacity),
+            indices: Vec::with_capacity(capacity),
+            count: 0,
+        }
     }
 
-    pub fn get_distance_to(&self, object: &Vector2<f32>) -> f32 {
-        f32::hypot(object.x - self.pos.x, object.y - self.pos.y)
+    pub fn add_particle(
+        &mut self,
+        pos: Vector2<f32>,
+        vel: Vector2<f32>,
+        mass: f32,
+        radius: f32,
+        index: usize,
+    ) {
+        self.pos_x.push(pos.x);
+        self.pos_y.push(pos.y);
+        self.vel_x.push(vel.x);
+        self.vel_y.push(vel.y);
+        self.net_force_x.push(0.0);
+        self.net_force_y.push(0.0);
+        self.mass.push(mass);
+        self.radius.push(radius);
+        self.indices.push(index);
+        self.count += 1;
+    }
+
+    pub fn get_position(&self, idx: usize) -> Vector2<f32> {
+        Vector2::new(self.pos_x[idx], self.pos_y[idx])
+    }
+
+    pub fn set_position(&mut self, idx: usize, pos: Vector2<f32>) {
+        self.pos_x[idx] = pos.x;
+        self.pos_y[idx] = pos.y;
+    }
+
+    pub fn get_velocity(&self, idx: usize) -> Vector2<f32> {
+        Vector2::new(self.vel_x[idx], self.vel_y[idx])
+    }
+
+    pub fn set_velocity(&mut self, idx: usize, vel: Vector2<f32>) {
+        self.vel_x[idx] = vel.x;
+        self.vel_y[idx] = vel.y;
+    }
+
+    pub fn get_net_force(&self, idx: usize) -> Vector2<f32> {
+        Vector2::new(self.net_force_x[idx], self.net_force_y[idx])
+    }
+
+    #[allow(dead_code)]
+    pub fn set_net_force(&mut self, idx: usize, force: Vector2<f32>) {
+        self.net_force_x[idx] = force.x;
+        self.net_force_y[idx] = force.y;
+    }
+
+    pub fn reset_net_force(&mut self, idx: usize) {
+        self.net_force_x[idx] = 0.0;
+        self.net_force_y[idx] = 0.0;
+    }
+
+    pub fn add_to_net_force(&mut self, idx: usize, force: Vector2<f32>) {
+        self.net_force_x[idx] += force.x;
+        self.net_force_y[idx] += force.y;
+    }
+
+    pub fn get_attraction_force(&self, idx1: usize, idx2: usize) -> Vector2<f32> {
+        let dx = self.pos_x[idx2] - self.pos_x[idx1];
+        let dy = self.pos_y[idx2] - self.pos_y[idx1];
+
+        let distance_squared = dx * dx + dy * dy;
+        let r = (distance_squared + SOFTENING.powi(2)).sqrt();
+
+        let norm = (dx * dx + dy * dy).sqrt();
+        let dir_x = dx / norm;
+        let dir_y = dy / norm;
+
+        let magnitude = G * ((self.mass[idx1] * self.mass[idx2]) / r.powi(2));
+
+        Vector2::new(dir_x * magnitude, dir_y * magnitude)
+    }
+
+    pub fn get_distance_to(&self, idx: usize, object: &Vector2<f32>) -> f32 {
+        f32::hypot(object.x - self.pos_x[idx], object.y - self.pos_y[idx])
+    }
+
+    pub fn get_velocity_norm(&self, idx: usize) -> f32 {
+        (self.vel_x[idx] * self.vel_x[idx] + self.vel_y[idx] * self.vel_y[idx]).sqrt()
     }
 
     fn get_color(&self, value: f32, left: &Color, right: &Color) -> Color {
@@ -52,8 +153,9 @@ impl Particle {
         )
     }
 
-    pub fn show(
+    pub fn show_particle(
         &self,
+        idx: usize,
         canvas: &mut Canvas,
         ctx: &mut Context,
         offset: Vector2<f32>,
@@ -62,10 +164,10 @@ impl Particle {
         min_vel: f32,
     ) {
         let mut new_radius: f32;
-        if self.radius < 1.0 {
+        if self.radius[idx] < 1.0 {
             new_radius = 0.25 * zoom;
         } else {
-            new_radius = self.radius * zoom;
+            new_radius = self.radius[idx] * zoom;
         }
         if new_radius < 0.25 {
             new_radius = 0.25;
@@ -75,7 +177,7 @@ impl Particle {
         let left = Color::BLUE;
         let middle = Color::GREEN;
         let right = Color::RED;
-        let norm_vel = self.vel.norm();
+        let norm_vel = self.get_velocity_norm(idx);
         let new_color: Color;
 
         if norm_vel < min_vel + mid_vel {
@@ -83,12 +185,14 @@ impl Particle {
         } else {
             new_color = self.get_color((norm_vel - min_vel - mid_vel) / mid_vel, &middle, &right);
         }
+
+        let particle_pos = self.get_position(idx);
         let dot_mesh = graphics::Mesh::new_circle(
             ctx,
             graphics::DrawMode::fill(),
             Point2 {
-                x: world_to_screen_coords(self.pos, &offset, zoom).x,
-                y: world_to_screen_coords(self.pos, &offset, zoom).y,
+                x: world_to_screen_coords(particle_pos, &offset, zoom).x,
+                y: world_to_screen_coords(particle_pos, &offset, zoom).y,
             },
             new_radius,
             0.1,
@@ -97,5 +201,69 @@ impl Particle {
         .unwrap();
 
         canvas.draw(&dot_mesh, graphics::DrawParam::default());
+    }
+
+    pub fn sort_by_mass(&mut self) {
+        // Create indices for sorting
+        let mut indices: Vec<usize> = (0..self.count).collect();
+        indices.sort_by_key(|&i| self.mass[i] as u32);
+
+        // Create new arrays in sorted order
+        let mut new_pos_x = Vec::with_capacity(self.count);
+        let mut new_pos_y = Vec::with_capacity(self.count);
+        let mut new_vel_x = Vec::with_capacity(self.count);
+        let mut new_vel_y = Vec::with_capacity(self.count);
+        let mut new_net_force_x = Vec::with_capacity(self.count);
+        let mut new_net_force_y = Vec::with_capacity(self.count);
+        let mut new_mass = Vec::with_capacity(self.count);
+        let mut new_radius = Vec::with_capacity(self.count);
+        let mut new_indices = Vec::with_capacity(self.count);
+
+        for &i in &indices {
+            new_pos_x.push(self.pos_x[i]);
+            new_pos_y.push(self.pos_y[i]);
+            new_vel_x.push(self.vel_x[i]);
+            new_vel_y.push(self.vel_y[i]);
+            new_net_force_x.push(self.net_force_x[i]);
+            new_net_force_y.push(self.net_force_y[i]);
+            new_mass.push(self.mass[i]);
+            new_radius.push(self.radius[i]);
+            new_indices.push(self.indices[i]);
+        }
+
+        self.pos_x = new_pos_x;
+        self.pos_y = new_pos_y;
+        self.vel_x = new_vel_x;
+        self.vel_y = new_vel_y;
+        self.net_force_x = new_net_force_x;
+        self.net_force_y = new_net_force_y;
+        self.mass = new_mass;
+        self.radius = new_radius;
+        self.indices = new_indices;
+    }
+
+    pub fn find_max_velocity_norm(&self) -> f32 {
+        let mut max_vel = 0.0;
+        for i in 0..self.count {
+            let norm = self.get_velocity_norm(i);
+            if norm > max_vel {
+                max_vel = norm;
+            }
+        }
+        max_vel
+    }
+
+    pub fn find_min_velocity_norm(&self) -> f32 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let mut min_vel = f32::INFINITY;
+        for i in 0..self.count {
+            let norm = self.get_velocity_norm(i);
+            if norm < min_vel {
+                min_vel = norm;
+            }
+        }
+        min_vel
     }
 }

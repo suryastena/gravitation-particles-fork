@@ -11,9 +11,8 @@ use ggez::input::keyboard::{KeyCode, KeyInput};
 use ggez::GameError;
 use ggez::{conf, Context, ContextBuilder, GameResult};
 use nalgebra::Vector2;
-use particle::Particle;
+use particle::ParticleSystem;
 use quadtree::QuadTree;
-use rayon::prelude::*;
 use rectangle::Rectangle;
 use std::sync::{Arc, Mutex};
 use std::{env, fs};
@@ -34,7 +33,7 @@ fn main() {
         .build()
         .expect("aieee, could not create ggez context!");
 
-    match ctx.fs.create_dir("/image-cache") {
+    match ctx.fs.create_dir("image-cache") {
         Ok(_) => println!("Created initial cache folder"),
         Err(creating_error) => eprintln!("Error creating folder: {:?}", creating_error),
     }
@@ -61,7 +60,7 @@ fn main() {
 struct MyGame {
     screen: graphics::ScreenImage,
     qt: Arc<Mutex<QuadTree>>,
-    particles: Vec<Particle>,
+    particles: ParticleSystem,
     keysdown: Vec<KeyCode>,
     origin: Vector2<f32>,
     zoom: f32,
@@ -83,25 +82,9 @@ impl MyGame {
             WORLD_WIDTH,
             WORLD_HEIGHT,
         ))));
-        let mut particles: Vec<Particle> = Vec::new();
-        // create_galaxy(
-        //     &mut particles,
-        //     screen_to_world_coords(Vector2::new(410.0, 410.0), &origin, zoom),
-        //     Vector2::new(0.01, 0.0),
-        //     50.0,
-        //     1000.0,
-        //     0.0001,
-        //     5000,
-        // );
-        // create_galaxy(
-        //     &mut particles,
-        //     screen_to_world_coords(Vector2::new(WIDTH - 410.0, HEIGHT - 410.0), &origin, zoom),
-        //     Vector2::new(-0.01, 0.0),
-        //     50.0,
-        //     1000.0,
-        //     0.0001,
-        //     5000,
-        // );
+
+        let mut particles = ParticleSystem::with_capacity(10000);
+
         create_galaxy(
             &mut particles,
             screen_to_world_coords(Vector2::new(WIDTH / 2.0, HEIGHT / 2.0), &origin, zoom),
@@ -112,29 +95,8 @@ impl MyGame {
             2000,
         );
 
-        // spawn_circle(
-        //     &mut particles,
-        //     screen_to_world_coords(Vector2::new(WIDTH / 2.0, HEIGHT / 2.0), &origin, zoom),
-        //     120.0,
-        //     3.0,
-        //     4000,
-        // );
-        // spawn_circle(
-        //     &mut particles,
-        //     screen_to_world_coords(Vector2::new(400.0, 400.0), &origin, zoom),
-        //     100.0,
-        //     3.0,
-        //     10000,
-        // );
-        // spawn_circle(
-        //     &mut particles,
-        //     screen_to_world_coords(Vector2::new(WIDTH - 400.0, HEIGHT - 400.0), &origin, zoom),
-        //     100.0,
-        //     3.0,
-        //     10000,
-        // );
-
-        particles.par_sort_by_key(|item| item.mass as u32);
+        // Sort particles by mass
+        particles.sort_by_mass();
 
         MyGame {
             screen,
@@ -155,15 +117,11 @@ impl MyGame {
 impl EventHandler for MyGame {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         self.qt = Arc::new(Mutex::new(create_quadtree(&self.particles)));
-        // self.particles.par_iter_mut().for_each(|particle| {
-        //     calculate_new_position(
-        //         particle,
-        //         &mut self.qt.lock().unwrap(),
-        //     );
-        // });
-        for i in 0..self.particles.len() {
-            calculate_new_position(&mut self.particles[i], &mut self.qt.lock().unwrap());
+
+        for i in 0..self.particles.count {
+            calculate_new_position(&mut self.particles, i, &mut self.qt.lock().unwrap());
         }
+
         move_on_mouse(ctx, &mut self.origin, self.zoom);
         Ok(())
     }
@@ -176,33 +134,25 @@ impl EventHandler for MyGame {
             WIDTH / self.zoom,
             HEIGHT / self.zoom,
         );
-        let max_vel = self
-            .particles
-            .par_iter()
-            .max_by(|a, b| a.vel.norm().partial_cmp(&b.vel.norm()).unwrap())
-            .unwrap()
-            .vel
-            .norm();
-        let min_vel = self
-            .particles
-            .par_iter()
-            .min_by(|a, b| a.vel.norm().partial_cmp(&b.vel.norm()).unwrap())
-            .unwrap()
-            .vel
-            .norm();
+
+        let max_vel = self.particles.find_max_velocity_norm();
+        let min_vel = self.particles.find_min_velocity_norm();
+
         self.max_vel_avg =
             (self.max_vel_avg * self.vel_amount as f32 + max_vel) / (self.vel_amount as f32 + 1.0);
         self.min_vel_avg =
             (self.min_vel_avg * self.vel_amount as f32 + min_vel) / (self.vel_amount as f32 + 1.0);
         self.vel_amount += 1;
+
         let locked_qt = self.qt.lock().unwrap();
-        let particles_to_draw = locked_qt.query(&draw_query_area);
+        let particles_to_draw = locked_qt.query(&draw_query_area, &self.particles);
         locked_qt.show(
             &mut canvas,
             ctx,
             self.origin,
             self.zoom,
             &particles_to_draw,
+            &self.particles,
             self.max_vel_avg,
             self.min_vel_avg,
             false,
@@ -221,6 +171,7 @@ impl EventHandler for MyGame {
         ctx.gfx.present(&self.screen.image(ctx))?;
         Ok(())
     }
+
     fn key_down_event(
         &mut self,
         ctx: &mut Context,

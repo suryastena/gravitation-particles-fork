@@ -4,7 +4,7 @@ use ggez::{
 };
 use nalgebra::Vector2;
 
-use crate::{particle::Particle, utils::world_to_screen_coords};
+use crate::utils::world_to_screen_coords;
 
 #[derive(Clone)]
 pub struct Rectangle {
@@ -18,11 +18,11 @@ impl Rectangle {
         Self { top_left_pos, w, h }
     }
 
-    pub fn contains(&self, particle: &Particle) -> bool {
-        self.top_left_pos.x <= particle.pos.x
-            && self.top_left_pos.y <= particle.pos.y
-            && self.top_left_pos.x + self.w > particle.pos.x
-            && self.top_left_pos.y + self.h > particle.pos.y
+    pub fn contains_point(&self, pos: &Vector2<f32>) -> bool {
+        self.top_left_pos.x <= pos.x
+            && self.top_left_pos.y <= pos.y
+            && self.top_left_pos.x + self.w > pos.x
+            && self.top_left_pos.y + self.h > pos.y
     }
 
     pub fn intersects(&self, rect: &Self) -> bool {
@@ -39,7 +39,7 @@ impl Rectangle {
         ctx: &mut Context,
         offset: Vector2<f32>,
         zoom: f32,
-        color: &mut Color,
+        mut color: Color,
     ) {
         color.a = 0.3;
         let rect = graphics::Rect {
@@ -52,7 +52,7 @@ impl Rectangle {
             ctx,
             graphics::DrawMode::Stroke(graphics::StrokeOptions::DEFAULT),
             rect,
-            *color,
+            color,
         )
         .unwrap();
 

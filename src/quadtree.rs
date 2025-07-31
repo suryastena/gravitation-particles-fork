@@ -1,134 +1,166 @@
-use crate::particle::Particle;
+use crate::particle::ParticleSystem;
 use crate::rectangle::Rectangle;
 use ggez::{
     graphics::{Canvas, Color},
     Context,
 };
 use nalgebra::Vector2;
-// use rayon::prelude::*;
 
 #[derive(Clone)]
 pub struct QuadTree {
     bounds: Rectangle,
-    children: Option<[Box<QuadTree>; 4]>,
-    particle: Option<Particle>,
+    // children slots; None when leaf
+    children: [Option<Box<QuadTree>>; 4],
+    // stored particle index at leaf
+    particle_idx: Option<usize>,
     mass: f32,
-    m_center_pos: Vector2<f32>,
+    center_of_mass: Vector2<f32>,
 }
 
 impl QuadTree {
     pub fn new(bounds: Rectangle) -> Self {
-        let copy_bounds = bounds.clone();
+        let center = Vector2::new(
+            bounds.top_left_pos.x + bounds.w * 0.5,
+            bounds.top_left_pos.y + bounds.h * 0.5,
+        );
         Self {
             bounds,
-            children: None,
-            particle: None,
+            children: [None, None, None, None],
+            particle_idx: None,
             mass: 0.0,
-            m_center_pos: Vector2::new(
-                copy_bounds.top_left_pos.x + copy_bounds.w / 2.0,
-                copy_bounds.top_left_pos.y + copy_bounds.h / 2.0,
-            ),
+            center_of_mass: center,
         }
     }
 
-    fn is_divided(&self) -> bool {
-        !self.children.is_none()
+    #[inline]
+    fn is_leaf(&self) -> bool {
+        self.children[0].is_none()
     }
 
     fn subdivide(&mut self) {
-        let (x, y) = (self.bounds.top_left_pos.x, self.bounds.top_left_pos.y);
-        let (w, h) = (self.bounds.w, self.bounds.h);
-        let topleft = Rectangle::new(Vector2::new(x, y), w / 2.0, h / 2.0);
-        let topright = Rectangle::new(Vector2::new(x + w / 2.0, y), w / 2.0, h / 2.0);
-        let bottomleft = Rectangle::new(Vector2::new(x, y + h / 2.0), w / 2.0, h / 2.0);
-        let bottomright = Rectangle::new(Vector2::new(x + w / 2.0, y + h / 2.0), w / 2.0, h / 2.0);
-        self.children = Some([
-            Box::new(QuadTree::new(topleft)),
-            Box::new(QuadTree::new(topright)),
-            Box::new(QuadTree::new(bottomleft)),
-            Box::new(QuadTree::new(bottomright)),
-        ]);
+        let Rectangle { top_left_pos, w, h } = self.bounds;
+        let half_w = w * 0.5;
+        let half_h = h * 0.5;
+
+        let quads = [
+            Rectangle::new(top_left_pos, half_w, half_h),
+            Rectangle::new(
+                Vector2::new(top_left_pos.x + half_w, top_left_pos.y),
+                half_w,
+                half_h,
+            ),
+            Rectangle::new(
+                Vector2::new(top_left_pos.x, top_left_pos.y + half_h),
+                half_w,
+                half_h,
+            ),
+            Rectangle::new(
+                Vector2::new(top_left_pos.x + half_w, top_left_pos.y + half_h),
+                half_w,
+                half_h,
+            ),
+        ];
+
+        for (i, rect) in quads.into_iter().enumerate() {
+            self.children[i] = Some(Box::new(QuadTree::new(rect)));
+        }
     }
 
-    pub fn insert(&mut self, particle: &Particle) {
-        if !self.bounds.contains(particle) {
+    pub fn insert(&mut self, particles: &ParticleSystem, idx: usize) {
+        let pos = particles.get_position(idx);
+        if !self.bounds.contains_point(&pos) {
             return;
         }
 
-        if self.particle.is_none() {
-            self.particle = Some(*particle);
-        } else {
-            if !self.is_divided() {
-                self.subdivide();
+        // empty leaf: store directly
+        if self.is_leaf() && self.particle_idx.is_none() {
+            self.particle_idx = Some(idx);
+            self.mass = particles.mass[idx];
+            self.center_of_mass = pos;
+            return;
+        }
+
+        // if leaf with existing particle, subdivide and re-insert
+        if self.is_leaf() {
+            let old_idx = self.particle_idx.take().unwrap();
+            self.subdivide();
+            // insert old stored particle
+            self.insert(particles, old_idx);
+        }
+
+        // insert new into appropriate child
+        for child_opt in &mut self.children {
+            if let Some(child) = child_opt {
+                if child.bounds.contains_point(&pos) {
+                    child.insert(particles, idx);
+                    break;
+                }
             }
-            // self.children
-            //     .as_mut()
-            //     .unwrap()
-            //     .par_iter_mut()
-            //     .for_each(|leaf| {
-            //         leaf.as_mut().insert(particle);
-            //     });
-            for leaf in self.children.as_mut().unwrap().as_mut() {
-                leaf.as_mut().insert(particle);
-            }
-            self.update_mass();
+        }
+
+        // incremental center-of-mass update
+        let new_mass = self.mass + particles.mass[idx];
+        if new_mass > 0.0 {
+            self.center_of_mass =
+                (self.center_of_mass * self.mass + pos * particles.mass[idx]) / new_mass;
+            self.mass = new_mass;
         }
     }
 
-    pub fn calculate_force(&mut self, particle: &mut Particle) {
-        if !self.is_divided() {
-            if let Some(existent_particle) = &self.particle {
-                if existent_particle.index != particle.index {
-                    let attraction_force =
-                        particle.get_attraction_force(&self.particle.as_ref().unwrap());
-                    // let attraction_force = self.particle.unwrap().get_attraction_force(particle);
-                    particle.net_force += attraction_force;
+    pub fn calculate_force(&self, particles: &mut ParticleSystem, idx: usize) {
+        let pos = particles.get_position(idx);
+
+        if self.is_leaf() {
+            if let Some(other_idx) = self.particle_idx {
+                if other_idx != idx {
+                    let f = particles.get_attraction_force(idx, other_idx);
+                    particles.add_to_net_force(idx, f);
                 }
             }
             return;
         }
 
-        let ratio = self.bounds.w / particle.get_distance_to(&self.m_center_pos);
-        if ratio < 0.5 {
-            let attraction_force = particle.get_attraction_force(&Particle::new(
-                self.m_center_pos,
-                Vector2::new(0.0, 0.0),
-                self.mass,
-                1.0,
-                1000000,
-            ));
-            particle.net_force += attraction_force;
-            return;
-        }
+        let dx = self.center_of_mass.x - pos.x;
+        let dy = self.center_of_mass.y - pos.y;
+        let dist = (dx * dx + dy * dy + crate::consts::SOFTENING.powi(2)).sqrt();
 
-        for leaf in self.children.as_mut().unwrap() {
-            leaf.calculate_force(particle);
+        if self.bounds.w / dist < 0.5 {
+            let inv = 1.0 / dist;
+            let dir = Vector2::new(dx * inv, dy * inv);
+            let magnitude = crate::consts::G * particles.mass[idx] * self.mass / (dist * dist);
+            let force = dir * magnitude;
+            particles.add_to_net_force(idx, force);
+        } else {
+            for child_opt in &self.children {
+                if let Some(child) = child_opt {
+                    child.calculate_force(particles, idx);
+                }
+            }
         }
     }
 
-    fn update_mass(&mut self) {
-        if !self.is_divided() {
-            if self.particle.is_none() {
-                return;
-            }
-            self.mass = self.particle.as_ref().unwrap().mass;
-            self.m_center_pos = self.particle.as_ref().unwrap().pos;
+    pub fn query(&self, area: &Rectangle, particles: &ParticleSystem) -> Vec<usize> {
+        let mut result = Vec::new();
+        self.query_recursive(area, particles, &mut result);
+        result
+    }
+
+    fn query_recursive(&self, area: &Rectangle, particles: &ParticleSystem, out: &mut Vec<usize>) {
+        if !self.bounds.intersects(area) {
             return;
         }
-        let mut mass_sum: f32 = 0.0;
-        let mut center_x: f32 = 0.0;
-        let mut center_y: f32 = 0.0;
-
-        for leaf in self.children.as_mut().unwrap() {
-            leaf.as_mut().update_mass();
-            mass_sum += leaf.as_ref().mass;
-            center_x += leaf.as_ref().m_center_pos.x * leaf.as_ref().mass;
-            center_y += leaf.as_ref().m_center_pos.y * leaf.as_ref().mass;
+        if let Some(idx) = self.particle_idx {
+            if area.contains_point(&particles.get_position(idx)) {
+                out.push(idx);
+            }
         }
-        self.mass = mass_sum;
-        center_x /= mass_sum;
-        center_y /= mass_sum;
-        self.m_center_pos = Vector2::new(center_x, center_y);
+        if !self.is_leaf() {
+            for child_opt in &self.children {
+                if let Some(child) = child_opt {
+                    child.query_recursive(area, particles, out);
+                }
+            }
+        }
     }
 
     pub fn show(
@@ -137,65 +169,34 @@ impl QuadTree {
         ctx: &mut Context,
         offset: Vector2<f32>,
         zoom: f32,
-        particles_to_draw: &Vec<Particle>,
+        particle_list: &[usize],
+        particles: &ParticleSystem,
         max_vel: f32,
         min_vel: f32,
-        show_bounds: bool,
+        draw_bounds: bool,
     ) {
-        if show_bounds {
-            self.bounds.show(
-                canvas,
-                ctx,
-                offset,
-                zoom,
-                &mut Color::from_rgb(255, 255, 255),
-            );
+        if draw_bounds {
+            self.bounds.show(canvas, ctx, offset, zoom, Color::MAGENTA);
         }
-        match self.children.as_ref() {
-            Some(children) => {
-                for leaf in children.as_ref() {
-                    leaf.show(
+        for &i in particle_list {
+            particles.show_particle(i, canvas, ctx, offset, zoom, max_vel, min_vel);
+        }
+        if draw_bounds && !self.is_leaf() {
+            for child_opt in &self.children {
+                if let Some(child) = child_opt {
+                    child.show(
                         canvas,
                         ctx,
                         offset,
                         zoom,
-                        particles_to_draw,
+                        particle_list,
+                        particles,
                         max_vel,
                         min_vel,
-                        show_bounds,
+                        draw_bounds,
                     );
                 }
             }
-            None => {}
         }
-
-        match &self.particle {
-            Some(existent_particle) => {
-                if particles_to_draw.contains(&existent_particle) {
-                    existent_particle.show(canvas, ctx, offset, zoom, max_vel, min_vel);
-                }
-            }
-            None => {}
-        }
-    }
-
-    pub fn query(&self, rect: &Rectangle) -> Vec<Particle> {
-        let mut results = Vec::new();
-        if !self.bounds.intersects(rect) {
-            return results;
-        }
-
-        if let Some(particle) = &self.particle {
-            if rect.contains(particle) {
-                results.push(*particle);
-            }
-        }
-        if self.is_divided() {
-            for leaf in self.children.as_ref().unwrap().iter() {
-                results.extend(leaf.query(rect));
-            }
-        }
-
-        results
     }
 }
