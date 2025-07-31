@@ -1,3 +1,5 @@
+use std::simd::*;
+
 use crate::utils::world_to_screen_coords;
 use ggez::{
     graphics::{self, Canvas, Color},
@@ -6,7 +8,7 @@ use ggez::{
 };
 use nalgebra::Vector2;
 
-use crate::consts::{G, SOFTENING};
+use crate::consts::{G, LANES, SOFTENING};
 
 #[derive(Clone, Debug)]
 pub struct ParticleSystem {
@@ -116,9 +118,56 @@ impl ParticleSystem {
         self.net_force_y[idx] = 0.0;
     }
 
+    pub fn reset_all_net_force(&mut self) {
+        for f in &mut self.net_force_x {
+            *f = 0.0;
+        }
+        for f in &mut self.net_force_y {
+            *f = 0.0;
+        }
+    }
+
     pub fn add_to_net_force(&mut self, idx: usize, force: Vector2<f32>) {
         self.net_force_x[idx] += force.x;
         self.net_force_y[idx] += force.y;
+    }
+
+    pub fn apply_forces_simd(&mut self) {
+        const LANES: usize = 8;
+        let mut i = 0;
+        while i + LANES <= self.count {
+            let mass = Simd::<f32, LANES>::from_slice(&self.mass[i..i + LANES]);
+            let force_x = Simd::<f32, LANES>::from_slice(&self.net_force_x[i..i + LANES]);
+            let force_y = Simd::<f32, LANES>::from_slice(&self.net_force_y[i..i + LANES]);
+            let mut vel_x = Simd::<f32, LANES>::from_slice(&self.vel_x[i..i + LANES]);
+            let mut vel_y = Simd::<f32, LANES>::from_slice(&self.vel_y[i..i + LANES]);
+            let mut pos_x = Simd::<f32, LANES>::from_slice(&self.pos_x[i..i + LANES]);
+            let mut pos_y = Simd::<f32, LANES>::from_slice(&self.pos_y[i..i + LANES]);
+
+            let acc_x = force_x / mass;
+            let acc_y = force_y / mass;
+
+            vel_x += acc_x;
+            vel_y += acc_y;
+            pos_x += vel_x;
+            pos_y += vel_y;
+
+            self.vel_x[i..i + LANES].copy_from_slice(&vel_x.to_array());
+            self.vel_y[i..i + LANES].copy_from_slice(&vel_y.to_array());
+            self.pos_x[i..i + LANES].copy_from_slice(&pos_x.to_array());
+            self.pos_y[i..i + LANES].copy_from_slice(&pos_y.to_array());
+
+            i += LANES;
+        }
+
+        for idx in i..self.count {
+            let acc_x = self.net_force_x[idx] / self.mass[idx];
+            let acc_y = self.net_force_y[idx] / self.mass[idx];
+            self.vel_x[idx] += acc_x;
+            self.vel_y[idx] += acc_y;
+            self.pos_x[idx] += self.vel_x[idx];
+            self.pos_y[idx] += self.vel_y[idx];
+        }
     }
 
     pub fn get_attraction_force(&self, idx1: usize, idx2: usize) -> Vector2<f32> {
@@ -243,9 +292,20 @@ impl ParticleSystem {
     }
 
     pub fn find_max_velocity_norm(&self) -> f32 {
-        let mut max_vel = 0.0;
-        for i in 0..self.count {
-            let norm = self.get_velocity_norm(i);
+        use std::simd::{num::SimdFloat, Simd};
+
+        let mut max_chunk = Simd::<f32, LANES>::splat(0.0);
+        let mut i = 0;
+        while i + LANES <= self.count {
+            let vx = Simd::<f32, LANES>::from_slice(&self.vel_x[i..i + LANES]);
+            let vy = Simd::<f32, LANES>::from_slice(&self.vel_y[i..i + LANES]);
+            let norm = (vx * vx + vy * vy).sqrt();
+            max_chunk = max_chunk.simd_max(norm);
+            i += LANES;
+        }
+        let mut max_vel = max_chunk.reduce_max();
+        for j in i..self.count {
+            let norm = self.get_velocity_norm(j);
             if norm > max_vel {
                 max_vel = norm;
             }
@@ -254,12 +314,24 @@ impl ParticleSystem {
     }
 
     pub fn find_min_velocity_norm(&self) -> f32 {
+        use std::simd::{num::SimdFloat, Simd};
+
         if self.count == 0 {
             return 0.0;
         }
-        let mut min_vel = f32::INFINITY;
-        for i in 0..self.count {
-            let norm = self.get_velocity_norm(i);
+        const LANES: usize = 8;
+        let mut min_chunk = Simd::<f32, LANES>::splat(f32::INFINITY);
+        let mut i = 0;
+        while i + LANES <= self.count {
+            let vx = Simd::<f32, LANES>::from_slice(&self.vel_x[i..i + LANES]);
+            let vy = Simd::<f32, LANES>::from_slice(&self.vel_y[i..i + LANES]);
+            let norm = (vx * vx + vy * vy).sqrt();
+            min_chunk = min_chunk.simd_min(norm);
+            i += LANES;
+        }
+        let mut min_vel = min_chunk.reduce_min();
+        for j in i..self.count {
+            let norm = self.get_velocity_norm(j);
             if norm < min_vel {
                 min_vel = norm;
             }

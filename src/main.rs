@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 mod consts;
 mod particle;
 mod quadtree;
@@ -17,8 +19,8 @@ use rectangle::Rectangle;
 use std::sync::{Arc, Mutex};
 use std::{env, fs};
 use utils::{
-    calculate_new_position, clean_cache_images, convert_to_video, create_galaxy, create_quadtree,
-    move_on_mouse, rename_images, save_screen, screen_to_world_coords, spawn_circle, zoom_world,
+    clean_cache_images, convert_to_video, create_galaxy, create_quadtree, move_on_mouse,
+    rename_images, save_screen, screen_to_world_coords, spawn_circle, zoom_world,
 };
 
 fn main() {
@@ -118,9 +120,13 @@ impl EventHandler for MyGame {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         self.qt = Arc::new(Mutex::new(create_quadtree(&self.particles)));
 
-        for i in 0..self.particles.count {
-            calculate_new_position(&mut self.particles, i, &mut self.qt.lock().unwrap());
+        {
+            let qt_lock = self.qt.lock().unwrap();
+            self.particles.reset_all_net_force();
+            let idxs: Vec<usize> = (0..self.particles.count).collect();
+            qt_lock.calculate_force_simd(&mut self.particles, &idxs);
         }
+        self.particles.apply_forces_simd();
 
         move_on_mouse(ctx, &mut self.origin, self.zoom);
         Ok(())

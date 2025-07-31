@@ -5,7 +5,7 @@ use ggez::{
     Context,
 };
 use nalgebra::Vector2;
-
+use std::simd::{cmp::SimdPartialOrd, *};
 #[derive(Clone)]
 pub struct QuadTree {
     bounds: Rectangle,
@@ -107,38 +107,6 @@ impl QuadTree {
         }
     }
 
-    pub fn calculate_force(&self, particles: &mut ParticleSystem, idx: usize) {
-        let pos = particles.get_position(idx);
-
-        if self.is_leaf() {
-            if let Some(other_idx) = self.particle_idx {
-                if other_idx != idx {
-                    let f = particles.get_attraction_force(idx, other_idx);
-                    particles.add_to_net_force(idx, f);
-                }
-            }
-            return;
-        }
-
-        let dx = self.center_of_mass.x - pos.x;
-        let dy = self.center_of_mass.y - pos.y;
-        let dist = (dx * dx + dy * dy + crate::consts::SOFTENING.powi(2)).sqrt();
-
-        if self.bounds.w / dist < 0.5 {
-            let inv = 1.0 / dist;
-            let dir = Vector2::new(dx * inv, dy * inv);
-            let magnitude = crate::consts::G * particles.mass[idx] * self.mass / (dist * dist);
-            let force = dir * magnitude;
-            particles.add_to_net_force(idx, force);
-        } else {
-            for child_opt in &self.children {
-                if let Some(child) = child_opt {
-                    child.calculate_force(particles, idx);
-                }
-            }
-        }
-    }
-
     pub fn query(&self, area: &Rectangle, particles: &ParticleSystem) -> Vec<usize> {
         let mut result = Vec::new();
         self.query_recursive(area, particles, &mut result);
@@ -195,6 +163,75 @@ impl QuadTree {
                         min_vel,
                         draw_bounds,
                     );
+                }
+            }
+        }
+    }
+
+    pub fn calculate_force_simd(&self, particles: &mut ParticleSystem, indices: &[usize]) {
+        const LANES: usize = 8;
+        let mut remainder: Vec<usize> = Vec::new();
+
+        let center_x = self.center_of_mass.x;
+        let center_y = self.center_of_mass.y;
+        let width = self.bounds.w;
+        let soft_sq = crate::consts::SOFTENING.powi(2);
+
+        let mut i = 0;
+        while i + LANES <= indices.len() {
+            let idx_chunk = Simd::<usize, LANES>::from_slice(&indices[i..i + LANES]);
+            let pos_x = Simd::<f32, LANES>::gather_or_default(&particles.pos_x, idx_chunk);
+            let pos_y = Simd::<f32, LANES>::gather_or_default(&particles.pos_y, idx_chunk);
+
+            let dx = Simd::<f32, LANES>::splat(center_x) - pos_x;
+            let dy = Simd::<f32, LANES>::splat(center_y) - pos_y;
+            let dist_sq = dx * dx + dy * dy + Simd::<f32, LANES>::splat(soft_sq);
+            let dist = dist_sq.sqrt();
+            let ratio = Simd::<f32, LANES>::splat(width) / dist;
+
+            let mask = ratio.simd_lt(Simd::splat(0.5));
+
+            let inv = Simd::<f32, LANES>::splat(1.0) / dist;
+            let dir_x = dx * inv;
+            let dir_y = dy * inv;
+            let masses = Simd::<f32, LANES>::gather_or_default(&particles.mass, idx_chunk);
+            let magnitude =
+                Simd::<f32, LANES>::splat(crate::consts::G * self.mass) * masses / dist_sq;
+            let force_x = dir_x * magnitude;
+            let force_y = dir_y * magnitude;
+
+            for lane in 0..LANES {
+                let idx = indices[i + lane];
+                if mask.test(lane) {
+                    particles.net_force_x[idx] += force_x[lane];
+                    particles.net_force_y[idx] += force_y[lane];
+                } else {
+                    remainder.push(idx);
+                }
+            }
+            i += LANES;
+        }
+
+        for &idx in &indices[i..] {
+            remainder.push(idx);
+        }
+
+        if remainder.is_empty() {
+            return;
+        }
+        if self.is_leaf() {
+            if let Some(other_idx) = self.particle_idx {
+                for &idx in &remainder {
+                    if idx != other_idx {
+                        let f = particles.get_attraction_force(idx, other_idx);
+                        particles.add_to_net_force(idx, f);
+                    }
+                }
+            }
+        } else {
+            for child_opt in &self.children {
+                if let Some(child) = child_opt {
+                    child.calculate_force_simd(particles, &remainder);
                 }
             }
         }

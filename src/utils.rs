@@ -74,23 +74,6 @@ pub fn create_quadtree(particles: &ParticleSystem) -> QuadTree {
     qt
 }
 
-pub fn calculate_new_position(particles: &mut ParticleSystem, idx: usize, qt: &mut QuadTree) {
-    particles.reset_net_force(idx);
-    qt.calculate_force(particles, idx);
-
-    let mass = particles.mass[idx];
-    let net_force = particles.get_net_force(idx);
-    let acceleration = net_force / mass;
-
-    let mut velocity = particles.get_velocity(idx);
-    velocity += acceleration;
-    particles.set_velocity(idx, velocity);
-
-    let mut position = particles.get_position(idx);
-    position += velocity;
-    particles.set_position(idx, position);
-}
-
 pub fn world_to_screen_coords(
     world_coords: Vector2<f32>,
     origin: &Vector2<f32>,
