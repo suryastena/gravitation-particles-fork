@@ -297,8 +297,8 @@ impl ParticleSystem {
         let mut max_chunk = Simd::<f32, LANES>::splat(0.0);
         let mut i = 0;
         while i + LANES <= self.count {
-            let vx = Simd::<f32, LANES>::from_slice(&self.vel_x[i..i + LANES]);
-            let vy = Simd::<f32, LANES>::from_slice(&self.vel_y[i..i + LANES]);
+            let vx = Simd::<f32, LANES>::from_slice(&self.net_force_x[i..i + LANES]);
+            let vy = Simd::<f32, LANES>::from_slice(&self.net_force_y[i..i + LANES]);
             let norm = (vx * vx + vy * vy).sqrt();
             max_chunk = max_chunk.simd_max(norm);
             i += LANES;
@@ -323,8 +323,8 @@ impl ParticleSystem {
         let mut min_chunk = Simd::<f32, LANES>::splat(f32::INFINITY);
         let mut i = 0;
         while i + LANES <= self.count {
-            let vx = Simd::<f32, LANES>::from_slice(&self.vel_x[i..i + LANES]);
-            let vy = Simd::<f32, LANES>::from_slice(&self.vel_y[i..i + LANES]);
+            let vx = Simd::<f32, LANES>::from_slice(&self.net_force_x[i..i + LANES]);
+            let vy = Simd::<f32, LANES>::from_slice(&self.net_force_y[i..i + LANES]);
             let norm = (vx * vx + vy * vy).sqrt();
             min_chunk = min_chunk.simd_min(norm);
             i += LANES;

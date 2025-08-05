@@ -1,3 +1,4 @@
+
 use crate::consts::{G, MAX_ZOOM, MOUSE_AREA, WORLD_HEIGHT, WORLD_WIDTH};
 use crate::particle::ParticleSystem;
 use crate::quadtree::QuadTree;
@@ -34,6 +35,7 @@ pub fn spawn_circle(
     }
 }
 
+
 #[allow(dead_code)]
 pub fn create_galaxy(
     particles: &mut ParticleSystem,
@@ -49,19 +51,67 @@ pub fn create_galaxy(
         let distance_to_center = pos.metric_distance(&center);
         let orbital_vel = ((G * sun_mass) / distance_to_center).sqrt();
         let dir = Vector2::new(pos.y - center.y, center.x - pos.x).normalize();
-        particles.add_particle(pos, dir * orbital_vel, particle_mass, 0.00001, i as usize);
+        particles.add_particle(pos, dir * orbital_vel, particle_mass, 0.001, i as usize);
     }
 
-    // Add the sun
+  // Add the sun
     particles.add_particle(
         center,
         initial_vel,
-        sun_mass,
+        sun_mass*1.0,
         1.5,
         particles_amount as usize,
     );
 }
+#[allow(dead_code)]
+pub fn create_square(
+    particles: &mut ParticleSystem,
+    center: Vector2<f32>,
+    side: f32,
+    particle_mass: f32,
+    average_velocity: Vector2<f32>,
+    velocity_spread: f32,
+    particles_amount: i32,
+) {
+    let mut rng = rand::thread_rng();
+    let half = side / 2.0;
 
+    for i in 0..particles_amount {
+        let x = rng.gen_range(center.x - half..center.x + half);
+        let y = rng.gen_range(center.y - half..center.y + half);
+        let pos = Vector2::new(x, y);
+
+        // random offset in a disk of radius `velocity_spread` so the expectation of offset is zero
+        let angle = rng.gen_range(0.0..2.0 * std::f32::consts::PI);
+        let magnitude = rng.gen_range(0.0..velocity_spread);
+        let offset = Vector2::new(magnitude * angle.cos(), magnitude * angle.sin());
+
+        let vel = average_velocity + offset;
+        particles.add_particle(pos, vel, particle_mass, 0.001, i as usize);
+    }
+}
+
+#[allow(dead_code)]
+pub fn create_square_default(
+    particles: &mut ParticleSystem,
+    center: Vector2<f32>,
+    side: f32,
+    particle_mass: f32,
+    average_velocity: Vector2<f32>,
+    particles_amount: i32,
+) {
+    // Use 30% of the average velocity's magnitude as the spread
+    let spread = average_velocity.norm() * 0.3;
+    create_square(
+        particles,
+        center,
+        side,
+        particle_mass,
+        average_velocity,
+        spread,
+        particles_amount,
+    );
+}
 pub fn create_quadtree(particles: &ParticleSystem) -> QuadTree {
     let mut qt = QuadTree::new(Rectangle::new(
         Vector2::new(0.0, 0.0),
@@ -87,7 +137,7 @@ pub fn screen_to_world_coords(
     origin: &Vector2<f32>,
     zoom: f32,
 ) -> Vector2<f32> {
-    screen_coords / zoom - origin
+    screen_coords / zoom - origin//ctx.mouse.position()
 }
 
 pub fn move_on_mouse(ctx: &mut Context, origin: &mut Vector2<f32>, zoom: f32) {
@@ -131,17 +181,17 @@ pub fn zoom_world(
     let mouse_world_before = screen_to_world_coords(Vector2::new(mouse_x, mouse_y), origin, *zoom);
 
     if wheel_direction > 0.0 {
-        *zoom = (*zoom * scale_factor).min(MAX_ZOOM);
+        *zoom = (*zoom * scale_factor);//.min(MAX_ZOOM);
     } else if wheel_direction < 0.0 {
-        *zoom = (*zoom / scale_factor).max(MOUSE_AREA);
+        *zoom = (*zoom / scale_factor);//.min(MOUSE_AREA);
     }
 
     let mouse_world_after = screen_to_world_coords(Vector2::new(mouse_x, mouse_y), origin, *zoom);
-    origin.x += mouse_world_before.x - mouse_world_after.x;
-    origin.y += mouse_world_before.y - mouse_world_after.y;
+    origin.x = mouse_world_before.x - mouse_world_after.x;
+    origin.y = mouse_world_before.y - mouse_world_after.y;
 
-    origin.x = origin.x.clamp(-WORLD_WIDTH / 2.0, WORLD_WIDTH / 2.0);
-    origin.y = origin.y.clamp(-WORLD_HEIGHT / 2.0, WORLD_HEIGHT / 2.0);
+    //origin.x = origin.x.clamp(-WORLD_WIDTH / 2.0, WORLD_WIDTH / 2.0);
+    //origin.y = origin.y.clamp(-WORLD_HEIGHT / 2.0, WORLD_HEIGHT / 2.0);
 }
 
 pub fn save_screen(ctx: &mut Context, screen: &mut ScreenImage, frame_count: u32) {
